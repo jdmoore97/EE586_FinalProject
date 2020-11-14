@@ -1,0 +1,45 @@
+make_msg(src, dest, data, timeout, ACK)
+
+calc_timeout()
+
+send_message(data, dest)
+    timeout = calc_timeout()
+    msg = make_msg(this.address, dest, data, timeout, ACK=0)
+    outbox_cache.update() // Check for timeouts
+    outbox_cache.push(msg)
+    // Send to any possible connection
+    for peer in peer_list //stand-in for any type of broadcast (ie, RF line-of-sight))
+        forward(msg, peer)e
+
+receive_message(msg)
+    if(msg.dest == this.address) // Message is for us
+        if msg.ack = 1
+            return // Throw away
+        else
+            received_cache.update() // Check for timeouts
+            if data is not in received_cache
+                deliver(msg)
+                received_cache.push(msg)
+            ack_msg = make_msg(msg.src, msg.dest, msg.data, msg.timeout, ACK=1)
+            // Send to any possible connection
+            for peer in peer_list //stand-in for any type of broadcast (ie, RF line-of-sight))
+                send_response(ack_msg, peer)
+    else // Message is for someone else
+        if msg.ack = 1
+            if msg.src == this.address
+                deliver(msg) // Deliver confirmation that message was sent
+                return
+            else
+                if msg.timeout < current_time
+                    for peer in peer_list
+                        forward(msg, peer)
+        else
+            outbox_cache.update()
+            if data is not in cache
+                outbox_cache.push(data)
+
+main_loop()
+    for msg in outbox_cache
+        for peer in peer_list
+            forward(msg, peer)
+    sleep(a little bit)
