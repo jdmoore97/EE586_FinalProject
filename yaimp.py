@@ -39,7 +39,7 @@ class Host_Node:
         current_time = time.time()
         return [msg for msg in cache if msg.timeout < current_time]
         
-    #def send_msg():
+    def send_msg():
 
     #Takes in a recieved json string and handles it as needed
     def rcv_msg(self, msg_str):
