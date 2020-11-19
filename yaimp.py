@@ -24,6 +24,7 @@ class Host_Node:
 
     received_cache = []
     outbox_cache = []
+    peers = []
 
     #Returns the time that a message should timeout
     def calc_timeout(self):
@@ -39,7 +40,16 @@ class Host_Node:
         current_time = time.time()
         return [msg for msg in cache if msg.timeout < current_time]
         
-    def send_msg():
+    def send_msg(self, message):
+        self.outbox_cache = self.update_cache(self.outbox_cache)
+        out_flag = False
+        for m in self.outbox_cache:
+            if m is message:
+                out_flag = True
+        if not(out_flag): #if the message is not already in the outbox
+            self.outbox_cache.append(message)
+            #TODO: Send message to all peers
+            
 
     #Takes in a recieved json string and handles it as needed
     def rcv_msg(self, msg_str):
@@ -62,7 +72,7 @@ class Host_Node:
                 ack_msg = self.make_msg(message.dest, message.src, message.data, True)
                 # TODO: Send ACK to all peers
         else: #Message is for someone else
-            if message.ACK == True:
+            if message.ACK == True: #The message is an ACK for someone else
                 if message.src == self.LISTEN_PORT:
                     #deliver confirmation that the message was sent
                     print("Your message \"" + message.data + "\" to " + message.dest + " was delivered")
@@ -71,14 +81,9 @@ class Host_Node:
                     if message.timeout < time.time:
                         # TODO: forward ACK to all peers
                         return
-            else:
-                self.outbox_cache = self.update_cache(self.outbox_cache)
-                out_flag = False
-                for m in self.outbox_cache:
-                    if m is message:
-                        out_flag = True
-                if not(out_flag): #if the message is not already in the outbox
-                    self.outbox_cache.append(message)
+            else: #The message is a normal message for somebody else
+
+                    #TODO: Send message to all peers
 
 # main
 if __name__ == "__main__":
