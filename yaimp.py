@@ -23,6 +23,7 @@ class Host_Node:
     TIMEOUT_DELTA = 60
     LISTEN_PORT = 8080 #The default port to listen on
     BROADCAST_PORT = 9080
+    BROADCAST_LIST = [9080, 9081, 9082, 9083, 9084]
 
     is_writing = False
 
@@ -45,14 +46,15 @@ class Host_Node:
         return [msg for msg in cache if msg.timeout < current_time]
 
     def broadcast_available(self, ACK):
-        sock = socket(AF_INET, SOCK_STREAM)
-        msg = self.make_msg(self.BROADCAST_PORT, self.LISTEN_PORT, "", ACK)
-        try:
-            sock.connect(("", self.BROADCAST_PORT))
-            msg_str = json.dumps(msg)
-            sock.sendall(msg_str)
-        except:
-            print("Error in broadcasting")
+        for b in self.BROADCAST_LIST:
+            sock = socket(AF_INET, SOCK_STREAM)
+            msg = self.make_msg(b, self.LISTEN_PORT, "", ACK)
+            try:
+                sock.connect(("", b))
+                msg_str = json.dumps(msg)
+                sock.sendall(msg_str)
+            except:
+                print("Error in broadcasting")
 
         
     # args is a list of messages that should be added into the outbox
@@ -149,6 +151,7 @@ def get_input(host):
         host.send_msg(msg)
 
 def broadcast_listen(host):
+    print("Broadcasting on port ", host.BROADCAST_PORT)
     broadcast_socket = socket(AF_INET, SOCK_STREAM)
     broadcast_socket.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
     broadcast_socket.bind(("",host.BROADCAST_PORT))
@@ -192,6 +195,10 @@ def main():
     if len(sys.argv) > 1:
         listen = sys.argv[1]
         host.LISTEN_PORT = listen
+    if len(sys.argv) > 2:
+        broad = sys.argv[2]
+        host.BROADCAST_PORT = broad
+        #host.BROADCAST_LIST.remove(broad)
     with concurrent.futures.ThreadPoolExecutor() as executor:
         message_worker = executor.submit(get_input, host)
         broadcast_worker = executor.submit(broadcast_listen, host)
