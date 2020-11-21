@@ -9,7 +9,7 @@ send_message(data, dest)
     outbox_cache.push(msg)
     // Send to any possible connection
     for peer in peer_list //stand-in for any type of broadcast (ie, RF line-of-sight))
-        forward(msg, peer)e
+        forward(msg, peer)
 
 receive_message(msg)
     if(msg.dest == this.address) // Message is for us
