@@ -259,7 +259,6 @@ def broadcast_listen(host):
 
 def receive_listen(host):
     print("Listening on port ", host.LISTEN_PORT)
-    print(host.current_prompt)
     receive_socket = socket(AF_INET, SOCK_STREAM)
   #  print("Listen socket created")
     receive_socket.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
