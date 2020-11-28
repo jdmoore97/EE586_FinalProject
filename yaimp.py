@@ -83,8 +83,8 @@ class Host_Node:
                 #print(b)
                 sock.sendall(msg_str.encode())
             except Exception as e:
-                pass
                 #print("Error in broadcasting: ", e)
+                pass
 
         
     # args is a list of messages that should be added into the outbox
@@ -104,6 +104,7 @@ class Host_Node:
                 out_flag = False
             for m in self.outbox_cache:
                 if m.__dict__ == msg.__dict__:
+                    print("Duplicate message. Do not add")
                     out_flag = True
             if not(out_flag): #if the message is not already in the outbox
                 self.outbox_cache.append(msg)
@@ -119,28 +120,28 @@ class Host_Node:
         # Send all messages in the outbox to every peer
         dead_peers = []
         for p in self.peers:
-            if p == self.LISTEN_PORT: #don't send to self
-                continue
-            #print(self.LISTEN_PORT, "starting to send outbox to", p)
-            sock = socket(AF_INET, SOCK_STREAM)
-            try:
-                #print("trying to connect to ", p)
-                sock.connect(("", p))
-                #print(self.LISTEN_PORT, "connected to ", p)
-                #print(self.outbox_cache)
-                #print("Outbox length before sending message:", len(self.outbox_cache))
-                for message in self.outbox_cache:
+            for message in self.outbox_cache:
+                if p == self.LISTEN_PORT: #don't send to self
+                    continue
+                #print(self.LISTEN_PORT, "starting to send outbox to", p)
+                sock = socket(AF_INET, SOCK_STREAM)
+                try:
+                    #print("trying to connect to ", p)
+                    sock.connect(("", p))
+                    #print(self.LISTEN_PORT, "connected to ", p)
+                    #print(self.outbox_cache)
+                    #print("Outbox length before sending message:", len(self.outbox_cache))
+                    
                     msg_str = json.dumps(message.__dict__)
-                #    print("Sending message \"", msg_str, "\" to ", p)
+                    #print("Sending message \"", msg_str, "\" to ", p)
                     sock.sendall(msg_str.encode())
-                 #   print("Message sent to ", p)
-                sock.close()
-            except Exception as e: 
-                print("something's wrong with %d. Exception is %s" % (p, e))
-                
-                dead_peers.append(p)
-                continue
-            #    print("Peer list after update:", self.peers)
+                    #print("Message sent to ", p)
+                    sock.close()
+                except Exception as e: 
+                    print("something's wrong with %d. Exception is %s" % (p, e))
+                    dead_peers.append(p)
+                    continue
+                #    print("Peer list after update:", self.peers)
         for dead in dead_peers:    
             self.update_peer(dead, False)    
             # print("Messages sent")
@@ -163,7 +164,6 @@ class Host_Node:
             print("Removing", peer, "from peer list")
             self.peers.remove(peer)
             #print("Peers after removal within update_peers method ", self.peers)
-        
         self.is_writing = False
 
     #Takes in a received json string and handles it as needed
@@ -173,6 +173,17 @@ class Host_Node:
         #Create a message object from the received message
         msg_dict = json.loads(msg_str)
         message = Message(**msg_dict)
+
+        self.update_cache(self.received_cache)
+        rcvd_flag = False
+        for m in self.received_cache:
+            if m.__dict__ == message.__dict__:
+                rcvd_flag = True
+        if rcvd_flag:
+            self.send_msg()
+            return
+        self.received_cache.append(message)
+
         #print(type(message.dest))
         #print(message.data)
         if(message.dest == self.LISTEN_PORT): #Message is for self
@@ -183,18 +194,11 @@ class Host_Node:
             else:
                 #print("This was for me!")
                 #Update received cache
-                self.update_cache(self.received_cache)
-                rcvd_flag = False
-                for m in self.received_cache:
-                    if m.__dict__ == message.__dict__:
-                        rcvd_flag = True
-                if not(rcvd_flag): #If the message has not been received before
-                    print("Rcvd message: ", message.data) #deliver message to upper layer
-                    
-                    self.received_cache.append(message)
+                print("Rcvd message from", message.src, ": ", message.data) #deliver message to upper layer
                 ack_msg = self.make_msg(message.dest, message.src, message.data, True, message.timeout)
                 # Send ACK to all peers
                 self.send_msg(ack_msg)
+                print("send_msg called in rcv_msg")
         else: #Message is for someone else
             #print("This was for someone else!")
             if message.ACK == True: #The message is an ACK for someone else
@@ -210,12 +214,14 @@ class Host_Node:
                     if message.timeout < time.time():
                         # forward ACK to all peers
                         self.send_msg(message)
+                        print("send_msg called in rcv_msg")
                         return
             else: #The message is a normal message for somebody else
                 # Send message to all peers if we don't have the ACK for it already
                 if(not(self.check_for_ackd_msg(message))):
                     #print("Checking for ackd messages")
                     self.send_msg(message)
+                    print("send_msg called in rcv_msg")
 
 def get_input(host):
     #print("Get_input called by worker thread")
