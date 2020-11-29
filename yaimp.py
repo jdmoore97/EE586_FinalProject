@@ -7,6 +7,7 @@ import time
 import json
 import select
 import concurrent.futures
+import threading
 
 class Message:
     def __init__(self, src, dest, data, timeout, ACK):
@@ -23,13 +24,17 @@ class Host_Node:
     TIMEOUT_DELTA = 60
     LISTEN_PORT = 8080 #The default port to listen on
     BROADCAST_PORT = 9080
-    BROADCAST_LIST = [9080, 9081, 9082, 9083, 9084]
-
-    is_writing = False
+    BROADCAST_LIST = [9080, 9081, 9082, 9083, 9084] 
 
     received_cache = []
     outbox_cache = []
     peers = []
+    outbox_lock = threading.Lock()
+    received_lock = threading.Lock()
+    peer_lock = threading.Lock()
+
+    prompts = {"msg" : "Type your message: ", "port":"Type the port you want to send to: "}
+    current_prompt = prompts["port"]
 
     #Returns the time that a message should timeout
     def calc_timeout(self):
@@ -44,192 +49,170 @@ class Host_Node:
         msg = Message(src, dest, data, t_out, ACK)
         return msg
 
-    def update_cache(self, cache):
+    def remove_timeouts(self, cache):
         current_time = time.time()
-        #print("Outbox cache in update fn")
-        for msg in cache:
-            if msg.timeout < current_time:
+        timed_out = []
+        if cache is self.outbox_cache:
+            lock = self.outbox_lock
+        else:
+            lock = self.received_lock
+        with lock: 
+            for msg in cache:
+                if msg.timeout < current_time:
+                    timed_out.append(msg)
+            for msg in timed_out:
                 print("Message timed out:", msg.__dict__)
                 cache.remove(msg)
-                
-        #print([msg.__dict__ for msg in cache if msg.timeout < current_time])
-        #return [msg for msg in cache if msg.timeout < current_time]
+                print(self.current_prompt)         
 
-    #Removes a message from the outbox that an acknowledgment was received for
-    #ack_msg is the ACK received for the message that needs to be removed
-    def remove_ackd_msg(self, ack_msg):
-        for m in self.outbox_cache:
-            if(m.src == ack_msg.src and m.dest == ack_msg.dest and m.timeout == ack_msg.timeout):
-                #print("Removing from outbox: ", m.__dict__)
-                self.outbox_cache.remove(m)
+    def update_cache(self, cache, message, is_adding):
+        #print("waiting for cache to become available to add/remove")
+        if cache is self.outbox_cache:
+            lock = self.outbox_lock
+        else:
+            lock = self.received_lock
+        with lock:
+            #print("Taking cache")
+            if(is_adding):
+                #print("adding message to cache:", message.__dict__)
+                for m in cache:
+                    # No need if the message is already in here
+                    if m.__dict__ == message.__dict__:
+                        #print("Message was already in cache")
+                        return
+                    # If incoming message is an ACK and the original message is in here, remove it
+                    if cache is self.outbox_cache:
+                        if m.src == message.src and m.dest == message.dest and m.data == message.data and m.timeout == message.timeout:
+                            if message.ACK:
+                                cache.remove(m)
+                                #print("Removing original message corresponding to this ACK")
+                                return
+                            else:
+                                #print("Ignoring because we already have an ACK for this message")                           
+                                return
+                cache.append(message)
+            else:
+                #print("Removing message from cache", message.__dict__)
+                cache.remove(message)
+            #print("Releasing cache")
 
-    def check_for_ackd_msg(self, msg):
-        for m in self.outbox_cache:
-            #Returns true if we already have the ACK for the given message
-            if(m.src == msg.src and m.dest == msg.dest and m.timeout == msg.timeout and m.ACK != msg.ACK):
-                return True
-        #Returns false otherwise
-        return False
+    # Takes in a port number to add or remove from the peer list
+    # is_adding should be True to add a peer and False to remove one
+    def update_peer(self, peer, is_adding):
+        if peer == self.LISTEN_PORT:
+            return
+        with self.peer_lock:
+            if(is_adding and (peer in self.peers)):
+                return
+            if(is_adding):
+                self.peers.append(peer)
+                print("Added", peer, "to peer list")
+                print(self.current_prompt)
+            else:
+                print("Removing", peer, "from peer list")
+                print(self.current_prompt)
+                self.peers.remove(peer)
 
     def broadcast_available(self, ACK):
-        #print("Broadcasting to:", self.BROADCAST_LIST)
         for b in self.BROADCAST_LIST:
             sock = socket(AF_INET, SOCK_STREAM)
             msg = self.make_msg(b, self.LISTEN_PORT, "", ACK)
             try:
                 sock.connect(("", b))
                 msg_str = json.dumps(msg.__dict__)
-                #print("Message_str:", msg_str)
-                #print(b)
                 sock.sendall(msg_str.encode())
             except Exception as e:
                 #print("Error in broadcasting: ", e)
                 pass
 
-        
     # args is a list of messages that should be added into the outbox
     def send_msg(self, *args):
         #Check outbox for timeouts
-        #print("Outbox cache before update:")
-        #for outmsg in self.outbox_cache:
-        #    print(outmsg.__dict__)
-        self.update_cache(self.outbox_cache)
-        #print("Outbox cache after update:")
-        #for outmsg in self.outbox_cache:
-        #    print(outmsg.__dict__)
+        self.remove_timeouts(self.outbox_cache)
         # Update the outbox with any messages passed in
         for msg in args:
-            out_flag = False
-            if not self.outbox_cache:
-                out_flag = False
-            for m in self.outbox_cache:
-                if m.__dict__ == msg.__dict__:
-                    print("Duplicate message. Do not add")
-                    out_flag = True
-            if not(out_flag): #if the message is not already in the outbox
-                self.outbox_cache.append(msg)
-                #print("Msg added to outbox")
-                #for outmsg in self.outbox_cache:
-                #    print(outmsg.__dict__)
-            # print("outbox updated")
-            #print("Peers at beginning of send message: ", self.peers)
-        #print("Outbox length before checking length:", len(self.outbox_cache))
+            self.update_cache(self.outbox_cache, msg, True)
         if len(self.outbox_cache) == 0:
-            #print("Nothing in outbox to send")
             return
         # Send all messages in the outbox to every peer
         dead_peers = []
-        for p in self.peers:
-            for message in self.outbox_cache:
-                if p == self.LISTEN_PORT: #don't send to self
-                    continue
-                #print(self.LISTEN_PORT, "starting to send outbox to", p)
-                sock = socket(AF_INET, SOCK_STREAM)
-                try:
-                    #print("trying to connect to ", p)
-                    sock.connect(("", p))
-                    #print(self.LISTEN_PORT, "connected to ", p)
-                    #print(self.outbox_cache)
-                    #print("Outbox length before sending message:", len(self.outbox_cache))
-                    
-                    msg_str = json.dumps(message.__dict__)
-                    #print("Sending message \"", msg_str, "\" to ", p)
-                    sock.sendall(msg_str.encode())
-                    #print("Message sent to ", p)
-                    sock.close()
-                except Exception as e: 
-                    print("something's wrong with %d. Exception is %s" % (p, e))
-                    dead_peers.append(p)
-                    continue
-                #    print("Peer list after update:", self.peers)
+        with self.peer_lock:
+            for p in self.peers:
+                with self.outbox_lock:
+                    for message in self.outbox_cache:
+                        if p == self.LISTEN_PORT: #don't send to self
+                            continue
+                        sock = socket(AF_INET, SOCK_STREAM)
+                        try:
+                            sock.connect(("", p))
+                            msg_str = json.dumps(message.__dict__)
+                            if(message.ACK):
+                                pass
+                                #print("Sending ACK to ", p,":")
+                            else:
+                                pass
+                                #print("Sending message to ", p,":")
+                            sock.sendall(msg_str.encode())
+                            sock.close()
+                        except Exception as e: 
+                            print("something's wrong with %d. Exception is %s" % (p, e))
+                            dead_peers.append(p)
+                            break
         for dead in dead_peers:    
             self.update_peer(dead, False)    
-            # print("Messages sent")
-
-    # Takes in a port number to add or remove from the peer list
-    # is_adding should be True to add a peer and False to remove one
-    def update_peer(self, peer, is_adding):
-        #print("Update peer called")
-        if peer == self.LISTEN_PORT:
-            return
-        if(is_adding and (peer in self.peers)):
-            return
-        while(self.is_writing):
-            pass
-        self.is_writing = True
-        if(is_adding):
-            self.peers.append(peer)
-            print("Added", peer, "to peer list")
-        else:
-            print("Removing", peer, "from peer list")
-            self.peers.remove(peer)
-            #print("Peers after removal within update_peers method ", self.peers)
-        self.is_writing = False
 
     #Takes in a received json string and handles it as needed
     def rcv_msg(self, msg_str):
-        #print("rcv_msg called")
-        #print(msg_str)
         #Create a message object from the received message
         msg_dict = json.loads(msg_str)
         message = Message(**msg_dict)
-
-        self.update_cache(self.received_cache)
-        rcvd_flag = False
-        for m in self.received_cache:
-            if m.__dict__ == message.__dict__:
-                rcvd_flag = True
-        if rcvd_flag:
-            self.send_msg()
-            return
-        self.received_cache.append(message)
-
-        #print(type(message.dest))
-        #print(message.data)
-        if(message.dest == self.LISTEN_PORT): #Message is for self
-            if message.ACK == True:
-                #remove original message from outbox
-                self.remove_ackd_msg(message)
+        self.remove_timeouts(self.received_cache)
+        # If we got this message before, do nothing 
+        with self.received_lock:
+            for m in self.received_cache: 
+                if m.__dict__ == message.__dict__:
+                    return
+        self.update_cache(self.received_cache, message, True)
+        if message.ACK == True:
+            # The message is an acknowledgement
+            # Check to see if we were the original sender.
+            if message.src == self.LISTEN_PORT:
+                # We were the original sender
+                #deliver confirmation that the message was sent
+                print("Your message \"", message.data , "\" to" , message.dest , "was delivered")
+                print(self.current_prompt)
                 return
-            else:
-                #print("This was for me!")
-                #Update received cache
+            else: #We were not the original sender
+                # This is an ACK we made, don't resend it
+                if message.dest == self.LISTEN_PORT:
+                    return
+                #Add the ACK to the outbox and send
+                self.send_msg(message)
+        else: # Check if we were the intended receiver or if we need to pass it on
+            if message.dest == self.LISTEN_PORT:
+            # We were the intended receiver
                 print("Rcvd message from", message.src, ": ", message.data) #deliver message to upper layer
+                print(self.current_prompt)
                 ack_msg = self.make_msg(message.dest, message.src, message.data, True, message.timeout)
                 # Send ACK to all peers
                 self.send_msg(ack_msg)
-                print("send_msg called in rcv_msg")
-        else: #Message is for someone else
-            #print("This was for someone else!")
-            if message.ACK == True: #The message is an ACK for someone else
-                #remove original message from outbox
-                self.remove_ackd_msg(message)
+            else:
+            # We are not the intended receiver
+                # We were the original sender, don't pass on
                 if message.src == self.LISTEN_PORT:
-                    #deliver confirmation that the message was sent
-                    print("Your message \"", message.data , "\" to" , message.dest , "was delivered")
-                    
-                    self.send_msg(message)
                     return
-                else:
-                    if message.timeout < time.time():
-                        # forward ACK to all peers
-                        self.send_msg(message)
-                        print("send_msg called in rcv_msg")
-                        return
-            else: #The message is a normal message for somebody else
-                # Send message to all peers if we don't have the ACK for it already
-                if(not(self.check_for_ackd_msg(message))):
-                    #print("Checking for ackd messages")
-                    self.send_msg(message)
-                    print("send_msg called in rcv_msg")
+                # Not for us, pass it on
+                self.send_msg(message)
 
 def get_input(host):
     #print("Get_input called by worker thread")
     while True:
         dest_port = input("Type the port you want to send to: ")
+        host.current_prompt = host.prompts["msg"]
         host.update_peer(int(dest_port), True)
         usr_msg = input("Type your message: ")
         msg = host.make_msg(dest_port, host.LISTEN_PORT, usr_msg, False)
+        host.current_prompt = host.prompts["port"]
         #print("Calling send_msg from get_input")
         host.send_msg(msg)
 
@@ -251,6 +234,7 @@ def broadcast_listen(host):
             msg_dict = json.loads(msg_rcvd)
             message = Message(**msg_dict)
             print("Detected peer at", message.src)
+            print(host.current_prompt)
             if(not(message.ACK)):
                 host.broadcast_available(True)
                 host.update_peer(message.src, True)
@@ -264,7 +248,8 @@ def broadcast_listen(host):
             pass
 
 def receive_listen(host):
-    print("Listening on port ", host.LISTEN_PORT)
+    print("\nListening on port ", host.LISTEN_PORT)
+    print(host.current_prompt)
     receive_socket = socket(AF_INET, SOCK_STREAM)
   #  print("Listen socket created")
     receive_socket.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
