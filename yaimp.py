@@ -61,9 +61,10 @@ class Host_Node:
                 if msg.timeout < current_time:
                     timed_out.append(msg)
             for msg in timed_out:
-                print("Message timed out:", msg.__dict__)
+                if not msg.ACK:
+                    print("Message timed out:", msg.__dict__)
                 cache.remove(msg)
-                print(self.current_prompt)         
+                #print(self.current_prompt)         
 
     def update_cache(self, cache, message, is_adding):
         #print("waiting for cache to become available to add/remove")
